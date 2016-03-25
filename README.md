@@ -114,7 +114,6 @@ Original data can be found via [wayback machine](https://web.archive.org/web/201
 * Made help message lower case
 * Improved Readme
 * Improved docs
-* Added MIT License
 * Added this changelog
 
 1.1 Release (11.10.2013 - 23.01.2016)
