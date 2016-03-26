@@ -58,39 +58,45 @@ def exec_exists_in_path(command):
             return False
 
 class Text2Speech(object):
-    valid_tts = {'pico2wave': True, 'RHVoice': True, 'espeak': True}
+    valid_tts = {}
+    voiceoverAvailable = False
+    engines = collections.OrderedDict([])
+    langs_allocated = []
+
+    name = NotImplemented #command name, for subclasses
+    langs = NotImplemented #list of language codes, for subclasses
+
+    def __init__(self):
+        Text2Speech.engines[self.name] = self
+
+    def invoke(self, out_wav_path, unicodetext, lang):
+        if not Text2Speech.valid_tts[self.name]:
+            return False
+        if not lang in self.langs:
+            return False
+        return self._invoke(out_wav_path, unicodetext, lang)
+
+    def _invoke(self, out_wav_path, unicodetext, lang):
+        raise NotImplementedError #for subclasses
 
     @staticmethod
     def check_support():
-        voiceoverAvailable = False
-
-        # Check for pico2wave voiceover
-        if not exec_exists_in_path("pico2wave"):
-            Text2Speech.valid_tts['pico2wave'] = False
-            print "Warning: pico2wave not found, voicever won't be generated using it."
-        else:
-            voiceoverAvailable = True
-
-        # Check for espeak voiceover
-        if not exec_exists_in_path("espeak"):
-            Text2Speech.valid_tts['espeak'] = False
-            print "Warning: espeak not found, voicever won't be generated using it."
-        else:
-            voiceoverAvailable = True
-
-        # Check for Russian RHVoice voiceover
-        if not exec_exists_in_path("RHVoice"):
-            Text2Speech.valid_tts['RHVoice'] = False
-            print "Warning: RHVoice not found, Russian voicever won't be generated."
-        else:
-            voiceoverAvailable = True
+        for engine in Text2Speech.engines.keys():
+            if not exec_exists_in_path(engine):
+                Text2Speech.valid_tts[engine] = False
+                print "Warning: %s not found, voiceover won't be generated using it."%engine
+            else:
+                Text2Speech.valid_tts[engine] = True
+                Text2Speech.voiceoverAvailable = True
+                Text2Speech.langs_allocated.extend(Text2Speech.engines[engine].langs)
+                print "Note: %s found."%engine
 
         # Return if we at least found one voiceover program.
         # Otherwise this will result in silent voiceover for tracks and "Playlist N" for playlists.
-        return voiceoverAvailable
+        return Text2Speech.voiceoverAvailable
 
     @staticmethod
-    def text2speech(out_wav_path, text):
+    def text2speech(out_wav_path, text, prefer_engine):
         # Skip voiceover generation if a track with the same name is used.
         # This might happen with "Track001" or "01. Intro" names for example.
         if os.path.isfile(out_wav_path):
@@ -101,15 +107,15 @@ class Text2Speech(object):
         if not isinstance(text, unicode):
             text = unicode(text, 'utf-8')
         lang = Text2Speech.guess_lang(text)
-        if lang == "ru-RU":
-            return Text2Speech.rhvoice(out_wav_path, text)
-        else:
-            if Text2Speech.pico2wave(out_wav_path, text):
-                return True
-            elif Text2Speech.espeak(out_wav_path, text):
+        if prefer_engine != None:
+            if Text2Speech.engines[prefer_engine].invoke(out_wav_path, text, lang):
                 return True
             else:
-                return False
+                print "Warning: unable to use %s to generate %s voiceover"%(prefer_engine, lang)
+        for engine in Text2Speech.engines.keys():
+            if Text2Speech.engines[engine].invoke(out_wav_path, text, lang):
+                return True
+        return False
 
     # guess-language seems like an overkill for now
     @staticmethod
@@ -119,25 +125,18 @@ class Text2Speech(object):
             lang = 'ru-RU'
         return lang
 
-    @staticmethod
-    def pico2wave(out_wav_path, unicodetext):
-        if not Text2Speech.valid_tts['pico2wave']:
-            return False
-        subprocess.call(["pico2wave", "-l", "en-GB", "-w", out_wav_path, unicodetext])
+class PicoTTS(Text2Speech):
+    langs = ["en-GB","en-US"]
+    name = "pico2wave"
+    def _invoke(self, out_wav_path, unicodetext, lang):
+        subprocess.call(["pico2wave", "-l", lang, "-w", out_wav_path, unicodetext])
         return True
+PicoTTS()
 
-    @staticmethod
-    def espeak(out_wav_path, unicodetext):
-        if not Text2Speech.valid_tts['espeak']:
-            return False
-        subprocess.call(["espeak", "-v", "english_rp", "-s", "150", "-w", out_wav_path, unicodetext])
-        return True
-
-    @staticmethod
-    def rhvoice(out_wav_path, unicodetext):
-        if not Text2Speech.valid_tts['RHVoice']:
-            return False
-
+class RhvoiceTTS(Text2Speech):
+    langs = ["ru-RU"]
+    name = "RHVoice"
+    def _invoke(self, out_wav_path, unicodetext, lang):
         tmp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp_file.close()
 
@@ -148,17 +147,41 @@ class Text2Speech(object):
 
         os.remove(tmp_file.name)
         return True
+RhvoiceTTS()
 
+class EspeakTTS(Text2Speech):
+    lang2voice = {"af":"afrikaans","an":"aragonese","bg":"bulgarian","bs":"bosnian","ca":"catalan","cs":"czech",
+                    "cy":"welsh","da":"danish","de":"german","el":"greek","en":"english","en-GB":"english_rp",
+                    "en-SC":"en-scottish","en-US":"english-us","en-WI":"en-westindies","eo":"esperanto",
+                    "es":"spanish","es-LA":"spanish-latin-am","et":"estonian","fa":"Farsi",
+                    "fa-PIN":"Farsi-Pinglish","fi":"finnish","fr-BE":"french-Belgium","fr-FR":"french",
+                    "ga":"irish-gaeilge","grc":"greek-ancient","hi":"hindi","hr":"croatian","hu":"hungarian",
+                    "hy":"armenian","hy-WEST":"armenian-west","id":"indonesian","is":"icelandic","it":"italian",
+                    "jbo":"lojban","ka":"georgian","kn":"kannada","ku":"kurdish","la":"latin","lt":"lithuanian",
+                    "lv":"latvian","mk":"macedonian","ml":"malayalam","ms":"malay","ne":"nepali","nl":"dutch",
+                    "no":"norwegian","pa":"punjabi","pl":"polish","pt-BR":"brazil","pt-PT":"portugal",
+                    "ro":"romanian","ru":"russian","ru-RU":"russian","sk":"slovak","sq":"albanian","sr":"serbian",
+                    "sv":"swedish","sw":"swahili-test","ta":"tamil","tr":"turkish","vi":"vietnam",
+                    "vi-HUE":"vietnam_hue","vi-SGN":"vietnam_sgn","zh":"Mandarin","zh-YUE":"cantonese"}
+    #Yes, english_rp is the only one with _ rather than -
+    langs = lang2voice.keys()
+    name = "espeak"
+    def _invoke(self, out_wav_path, unicodetext, lang):
+        lang = self.lang2voice[lang]
+        subprocess.call(["espeak", "-v", lang, "-s", "150", "-w", out_wav_path, unicodetext])
+        return True
+EspeakTTS()
 
 class Record(object):
 
-    def __init__(self, parent):
+    def __init__(self, parent, prefer_engine = None):
         self.parent = parent
         self._struct = collections.OrderedDict([])
         self._fields = {}
         self.voiceover = parent.voiceover
         self.rename = parent.rename
         self.trackgain = parent.trackgain
+        self.prefer_engine = prefer_engine
 
     def __getitem__(self, item):
         if item not in self._struct.keys():
@@ -177,12 +200,12 @@ class Record(object):
             output += struct.pack("<" + fmt, self._fields.get(i, default))
         return output
 
-    def text_to_speech(self, text, dbid, playlist = False):
+    def text_to_speech(self, text, dbid, is_playlist):
         if self.voiceover:
             # Create the voiceover wav file
             fn = "".join(["{0:02X}".format(ord(x)) for x in reversed(dbid)])
-            path = os.path.join(self.base, "iPod_Control", "Speakable", "Tracks" if not playlist else "Playlists", fn + ".wav")
-            return Text2Speech.text2speech(path, text)
+            path = os.path.join(self.base, "iPod_Control", "Speakable", "Tracks" if not is_playlist else "Playlists", fn + ".wav")
+            return Text2Speech.text2speech(path, text, self.prefer_engine)
         return False
 
     def path_to_ipod(self, filename):
@@ -225,10 +248,10 @@ class Record(object):
         return self.shuffledb.lists
 
 class TunesSD(Record):
-    def __init__(self, parent):
-        Record.__init__(self, parent)
-        self.track_header = TrackHeader(self)
-        self.play_header = PlaylistHeader(self)
+    def __init__(self, parent, prefer_engine):
+        Record.__init__(self, parent, prefer_engine)
+        self.track_header = TrackHeader(self, prefer_engine)
+        self.play_header = PlaylistHeader(self, prefer_engine)
         self._struct = collections.OrderedDict([
                            ("header_id", ("4s", "shdb")),
                            ("unknown1", ("I", 0x02000003)),
@@ -263,9 +286,9 @@ class TunesSD(Record):
         return output + track_header + play_header
 
 class TrackHeader(Record):
-    def __init__(self, parent):
+    def __init__(self, parent, prefer_engine):
         self.base_offset = 0
-        Record.__init__(self, parent)
+        Record.__init__(self, parent, prefer_engine)
         self._struct = collections.OrderedDict([
                            ("header_id", ("4s", "shth")),
                            ("total_length", ("I", 0)),
@@ -281,7 +304,7 @@ class TrackHeader(Record):
         # Construct the underlying tracks
         track_chunk = ""
         for i in self.tracks:
-            track = Track(self)
+            track = Track(self, self.prefer_engine)
             print "[*] Adding track", i
             track.populate(i)
             output += struct.pack("I", self.base_offset + self["total_length"] + len(track_chunk))
@@ -290,8 +313,8 @@ class TrackHeader(Record):
 
 class Track(Record):
 
-    def __init__(self, parent):
-        Record.__init__(self, parent)
+    def __init__(self, parent, prefer_engine):
+        Record.__init__(self, parent, prefer_engine)
         self._struct = collections.OrderedDict([
                            ("header_id", ("4s", "shtr")),
                            ("header_length", ("I", 0x174)),
@@ -353,12 +376,12 @@ class Track(Record):
         if isinstance(text, unicode):
             text = text.encode('utf-8', 'ignore')
         self["dbid"] = hashlib.md5(text).digest()[:8] #pylint: disable-msg=E1101
-        self.text_to_speech(text, self["dbid"])
+        self.text_to_speech(text, self["dbid"], False)
 
 class PlaylistHeader(Record):
-    def __init__(self, parent):
+    def __init__(self, parent, prefer_engine):
         self.base_offset = 0
-        Record.__init__(self, parent)
+        Record.__init__(self, parent, prefer_engine)
         self._struct = collections.OrderedDict([
                           ("header_id", ("4s", "shph")),
                           ("total_length", ("I", 0)),
@@ -371,7 +394,7 @@ class PlaylistHeader(Record):
 
     def construct(self, tracks): #pylint: disable-msg=W0221
         # Build the master list
-        masterlist = Playlist(self)
+        masterlist = Playlist(self, self.prefer_engine)
         print "[+] Adding master playlist"
         masterlist.set_master(tracks)
         chunks = [masterlist.construct(tracks)]
@@ -379,7 +402,7 @@ class PlaylistHeader(Record):
         # Build all the remaining playlists
         playlistcount = 1
         for i in self.lists:
-            playlist = Playlist(self)
+            playlist = Playlist(self, self.prefer_engine)
             print "[+] Adding playlist", i
             playlist.populate(i)
             construction = playlist.construct(tracks)
@@ -403,9 +426,9 @@ class PlaylistHeader(Record):
         return output + "".join(chunks)
 
 class Playlist(Record):
-    def __init__(self, parent):
+    def __init__(self, parent, prefer_engine):
         self.listtracks = []
-        Record.__init__(self, parent)
+        Record.__init__(self, parent, prefer_engine)
         self._struct = collections.OrderedDict([
                           ("header_id", ("4s", "shpl")),
                           ("total_length", ("I", 0)),
@@ -419,7 +442,7 @@ class Playlist(Record):
     def set_master(self, tracks):
         # By default use "All Songs" builtin voiceover (dbid all zero)
         # Else generate alternative "All Songs" to fit the speaker voice of other playlists
-        if self.voiceover and (Text2Speech.valid_tts['pico2wave'] or Text2Speech.valid_tts['espeak']):
+        if self.voiceover and ("en-GB" in Text2Speech.langs_allocated):
             self["dbid"] = hashlib.md5("masterlist").digest()[:8] #pylint: disable-msg=E1101
             self.text_to_speech("All songs", self["dbid"], True)
         self["listtype"] = 1
@@ -502,7 +525,7 @@ class Playlist(Record):
         return output + chunks
 
 class Shuffler(object):
-    def __init__(self, path, voiceover=True, rename=False, trackgain=0):
+    def __init__(self, path, voiceover=True, rename=False, trackgain=0, prefer_engine=None):
         self.path, self.base = self.determine_base(path)
         self.tracks = []
         self.albums = []
@@ -512,6 +535,7 @@ class Shuffler(object):
         self.voiceover = voiceover
         self.rename = rename
         self.trackgain = trackgain
+        self.prefer_engine = prefer_engine
 
     def initialize(self):
       # remove existing voiceover files (they are either useless or will be overwritten anyway)
@@ -534,7 +558,7 @@ class Shuffler(object):
         return base, base
 
     def populate(self):
-        self.tunessd = TunesSD(self)
+        self.tunessd = TunesSD(self, self.prefer_engine)
         for (dirpath, dirnames, filenames) in os.walk(self.path):
             dirnames.sort()
             # Ignore the speakable directory and any hidden directories
@@ -610,6 +634,7 @@ if __name__ == '__main__':
     parser.add_argument('--disable-voiceover', action='store_true', help='Disable voiceover feature')
     parser.add_argument('--rename-unicode', action='store_true', help='Rename files causing unicode errors, will do minimal required renaming')
     parser.add_argument('--track-gain', type=nonnegative_int, default=0, help='Specify volume gain (0-99) for all tracks; 0 (default) means no gain and is usually fine; e.g. 60 is very loud even on minimal player volume')
+    parser.add_argument('--prefer-engine', default=None, help='Specify a preferred voice-over engine out of those supported (currently only useful for choosing between espeak and pico2wave if both are installed)')
     parser.add_argument('path', help='Path to the IPod\'s root directory')
     result = parser.parse_args()
 
@@ -619,10 +644,10 @@ if __name__ == '__main__':
         check_unicode(result.path)
 
     if not result.disable_voiceover and not Text2Speech.check_support():
-            print "Error: Did not find any voiceover program. Voiceover disabled."
-            result.disable_voiceover = True
+        print "Error: Did not find any voiceover program. Voiceover disabled."
+        result.disable_voiceover = True
 
-    shuffle = Shuffler(result.path, voiceover=not result.disable_voiceover, rename=result.rename_unicode, trackgain=result.track_gain)
+    shuffle = Shuffler(result.path, voiceover=not result.disable_voiceover, rename=result.rename_unicode, trackgain=result.track_gain, prefer_engine=result.prefer_engine)
     shuffle.initialize()
     shuffle.populate()
     shuffle.write_database()
